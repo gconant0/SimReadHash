@@ -30,13 +30,13 @@ using namespace::std;
 #define K_LEN 31
 
 //Functions to extract kmer sequences
-string get_kmer_string(long kmer);
-char get_last_base(long kmer);
+string get_kmer_string(uint64_t kmer);
+char get_last_base(uint64_t kmer);
 
 //Holds a single kmer
 class Kmer {
 public:
-    long my_kmer, rev_kmer, left, right;
+    uint64_t my_kmer, rev_kmer, left, right;
     Kmer(Molecule_Sequence *data, int pos);
     
 };
@@ -47,18 +47,18 @@ class Kmer_node {
 public:
     Kmer_node();
     int have_kmer, have_next_kmers[4], has_next, has_pred;
-    long get_kmer() {return(my_kmer);};
-    long get_rev_kmer() {return(rev_kmer);};
-    long get_next_kmer() {return(next_kmer);};
-    long get_pred_kmer() {return(pred_kmer);};
-    long get_next_kmer(long i);                     //Tests all 4 possible next kmers
-    long get_next_rev_kmer(long i);                 //Tests all 4 possible next reverse kmers
-    void set_kmer(long kmer);
-    void set_next(long n_kmer) {has_next=1; next_kmer=n_kmer;};   //Found a valid next kmer
-    void set_prev(long p_kmer) {has_pred=1; pred_kmer=p_kmer;};   //Found a valid previous kmer
+    uint64_t get_kmer() {return(my_kmer);};
+    uint64_t get_rev_kmer() {return(rev_kmer);};
+    uint64_t get_next_kmer() {return(next_kmer);};
+    uint64_t get_pred_kmer() {return(pred_kmer);};
+    uint64_t get_next_kmer(uint64_t i);                     //Tests all 4 possible next kmers
+    uint64_t get_next_rev_kmer(uint64_t i);                 //Tests all 4 possible next reverse kmers
+    void set_kmer(uint64_t kmer);
+    void set_next(uint64_t n_kmer) {has_next=1; next_kmer=n_kmer;};   //Found a valid next kmer
+    void set_prev(uint64_t p_kmer) {has_pred=1; pred_kmer=p_kmer;};   //Found a valid previous kmer
 private:
-    long two_mask, kmask;
-    long my_kmer, rev_kmer, next_kmer, pred_kmer;
+    uint64_t two_mask, kmask;
+    uint64_t my_kmer, rev_kmer, next_kmer, pred_kmer;
     
 };
 
@@ -67,13 +67,13 @@ private:
 class DistrMap {
 private:
   // store the local unordered map in a distributed object to access from RPCs (Remote Procedure Calls)
-    using dobj_map_t = upcxx::dist_object<std::unordered_map<long, long> >;
+    using dobj_map_t = upcxx::dist_object<std::unordered_map<uint64_t, long> >;
 
   
 public:
     // map the key to a target process
-    int get_target_rank(const long &key) {
-      return std::hash<long>{}(key) % upcxx::rank_n();
+    int get_target_rank(const uint64_t &key) {
+      return std::hash<uint64_t>{}(key) % upcxx::rank_n();
     }
     
     dobj_map_t local_map;
@@ -81,33 +81,35 @@ public:
   DistrMap() : local_map({}) {}
     
   // insert a key-value pair into the hash table
-  upcxx::future<> insert(const long &key, const long &val) {
+  upcxx::future<> insert(const uint64_t &key, const long &val) {
     // the RPC returns an empty upcxx::future by default
     return upcxx::rpc(get_target_rank(key),
                       // lambda to insert the key-value pair
-                      [](dobj_map_t &lmap, const long &key, const long &val) {
+                      [](dobj_map_t &lmap, const uint64_t &key, const long &val) {
                         // insert into the local map at the target
                         lmap->insert({key, val});
                       }, local_map, key, val);
   }
-    upcxx::future<> increment(const long &key) {
+    upcxx::future<> increment(const uint64_t &key) {
       // the RPC returns an empty upcxx::future by default
       return upcxx::rpc(get_target_rank(key),
                         // lambda to insert the key-value pair
-                        [](dobj_map_t &lmap, const long &key) {
-                          // insert into the local map at the target
+                        [](dobj_map_t &lmap, const uint64_t &key) {
+          // insert into the local map at the target
           auto elem = lmap->find(key);
-          long new_val=elem->second+1;
-          lmap->erase(key);
-          lmap->insert({key, new_val});
-                        }, local_map, key);
+          //long new_val=elem->second+1;
+          //lmap->erase(key);
+          //lmap->insert({key, new_val});
+          elem->second++;
+      }, local_map, key);
+          
     }
     
   // find a key and return associated value in a future
-  upcxx::future<long> find(const long &key) {
+  upcxx::future<long> find(const uint64_t &key) {
     return upcxx::rpc(get_target_rank(key),
                       // lambda to find the key in the local map
-                      [](dobj_map_t &lmap, const long &key) -> long {
+                      [](dobj_map_t &lmap, const uint64_t &key) -> long {
                         auto elem = lmap->find(key);
                         if (elem == lmap->end()) return -1; // not found
                         else return elem->second; // key found: return value
@@ -117,35 +119,35 @@ public:
 
 //Make the local nodes and the map to them global for rpc function access
 Kmer_node *access_nodes;
-std::map<long, int> node_ids;
+std::map<uint64_t, int> node_ids;
 
-void rpc_set_prev (const long my_kmer, const long p_kmer)
+void rpc_set_prev (const uint64_t my_kmer, const uint64_t p_kmer)
 {
     auto index=node_ids.find(my_kmer);
     
     if (index == node_ids.end()) {
-        cout<<"ERROR: No kmer: "<<my_kmer<<" on node "<<upcxx::rank_me()<<endl;
+        cout<<"ERROR: rpc_set_prev No kmer: "<<my_kmer<<" on node "<<upcxx::rank_me()<<endl;
         return;
     }
     
     //cout<<"RPC: "<<upcxx::rank_me()<<" Kmer: "<<my_kmer<<" to "<<p_kmer<<" Kmer index="<<index->second<<endl;
     access_nodes[index->second].set_prev(p_kmer);
 }
-int rpc_next_valid(const long my_kmer)
+int rpc_next_valid(const uint64_t my_kmer)
 {
      auto index=node_ids.find(my_kmer);
      if (index == node_ids.end()) {
-         cout<<"ERROR: No kmer: "<<my_kmer<<" on node "<<upcxx::rank_me()<<endl;
+         cout<<"ERROR: rpc_next_valid No kmer: "<<my_kmer<<" on node "<<upcxx::rank_me()<<endl;
          return(0);
      }
      return(access_nodes[index->second].has_next);
      
  }
-long rpc_next_kmer(const long my_kmer)
+uint64_t rpc_next_kmer(const uint64_t my_kmer)
 {
      auto index=node_ids.find(my_kmer);
      if (index == node_ids.end()) {
-         cout<<"ERROR: No kmer: "<<my_kmer<<" on node "<<upcxx::rank_me()<<endl;
+         cout<<"ERROR: rpc_next_kmer No kmer: "<<my_kmer<<" on node "<<upcxx::rank_me()<<endl;
          return(0);
      }
      return(access_nodes[index->second].get_next_kmer());
@@ -159,9 +161,11 @@ int main (int argc, char **argv)
 {
     upcxx::init();
     
-    int i,j, cnt, genome_size, num_reads, read_len, r_start, kmers_per_read, next_valid, ntaxa, nchars, valid_local_kmers=0, num_found, found[8];
-    long next_kmer, my_kmer, val, b, t_start, t_end;
-    string genome_file, outfile, name, new_contig;
+    int i,j, cnt, genome_size, num_reads, read_len, r_start, kmers_per_read, next_valid, ntaxa, nchars, valid_local_kmers=0, num_found, found[8], contig_num;
+    long assembly_len=0;
+    uint64_t next_kmer, my_kmer, val, b, t_start, t_end;
+    string genome_file, outfile, name, new_contig, contig_name;
+    ofstream fout;
     Random_Gen *mygen;
     DATATYPE cdata=NUCLEIC;
 	Read_Sequence *read_seq;
@@ -180,7 +184,7 @@ int main (int argc, char **argv)
         std::stringstream ss;
         ss<<argv[2]<<" "<<argv[3];
         ss>>num_reads>>read_len;
-        
+        outfile=argv[4];
         
         mygen=new Random_Gen;
         read_seq=new Read_FASTA;
@@ -220,7 +224,7 @@ int main (int argc, char **argv)
         t_start=RunTime();
         kmers_per_read=read_len-K_LEN+1;
         
-        the_kmers=new Kmer**[num_reads];
+        the_kmers=new Kmer**[num_reads/upcxx::rank_n()];
         
         for(i=0; i<num_reads/upcxx::rank_n(); i++) {
             the_kmers[i]=new Kmer*[kmers_per_read];
@@ -230,7 +234,7 @@ int main (int argc, char **argv)
         }
         upcxx::barrier();
         t_end=RunTime();
-        cout<<upcxx::rank_me()<<": Kmer build time: "<<t_end-t_start<<endl;
+        cout<<upcxx::rank_me()<<": Kmer build time: "<<t_end-t_start<<" for "<<kmers_per_read<<" kmers per read and "<<num_reads/upcxx::rank_n()<<" reads"<<endl;
         
         
         //Construct distributed hash table on the kmers
@@ -238,10 +242,15 @@ int main (int argc, char **argv)
         for(i=0; i<num_reads/upcxx::rank_n(); i++) {
             for(j=0; j<read_len-K_LEN; j++) {
                 val =kmer_count.find(the_kmers[i][j]->my_kmer).wait();
+                
                 if (val != -1 )
                     kmer_count.increment(the_kmers[i][j]->my_kmer).wait();
                 else
                     kmer_count.insert(the_kmers[i][j]->my_kmer, 1).wait();
+                
+                val =kmer_count.find(the_kmers[i][j]->my_kmer).wait();
+                //if (upcxx::rank_me()==0)             cout<<"For "<<i<<", "<<j<<": "<<get_kmer_string(the_kmers[i][j]->my_kmer)<<" Loc is "<<kmer_count.get_target_rank(the_kmers[i][j]->my_kmer)<<" and val is "<<val<<" kmer: "<<the_kmers[i][j]->my_kmer<<endl;
+                   
             }
         }
         
@@ -249,28 +258,42 @@ int main (int argc, char **argv)
         t_end=RunTime();
         cout<<upcxx::rank_me()<<": Kmer hash table time: "<<t_end-t_start<<endl;
         
+        int sumk=0;
+        
         //Walk the local hash table looking for kmers seen more than once
         cout <<upcxx::rank_me()<<" : "<<kmer_count.local_map->size()<<endl;
         t_start=RunTime();
         for (auto it=kmer_count.local_map->begin();  it != kmer_count.local_map->end(); ++it) {
-            if (it->second >1) valid_local_kmers++;
+            if (it->second >1) {
+                valid_local_kmers++;
+            }
+            sumk+=it->second;
+            
         }
+        
+        //cout<<upcxx::rank_me()<<": Total kmer count: "<<sumk<<endl;
         
         //Local graph for holding the kmers and their next/last kmers
         access_nodes=new Kmer_node[valid_local_kmers];
         
         cnt=0;
+        int overfound=0;
         for (auto it=kmer_count.local_map->begin();  it != kmer_count.local_map->end(); ++it) {
             if (it->second >1) {
                 access_nodes[cnt].set_kmer(it->first);
+                //if (upcxx::rank_me()==0) cout<<"At "<<access_nodes[cnt].get_kmer()<<" or "<<get_kmer_string(access_nodes[cnt].get_kmer())<<" with "<<it->second<<endl;
                 for(i=0; i<8; i++) found[i]=0;
                 
                 //Check all four possible next kmers for validity in the hash table
                 for(b=0; b<4; b++) {
                     next_kmer=access_nodes[cnt].get_next_kmer(b);
+                    //if (upcxx::rank_me()==0) cout<<"Next for "<<b<<" is "<<next_kmer<<" or "<<get_kmer_string(next_kmer);
                     
                     const auto nextit = kmer_count.find(next_kmer).wait();
+                    //if (upcxx::rank_me()==0) cout<<" Hash val "<<nextit<<" on "<<kmer_count.get_target_rank(next_kmer)<<endl;
+                    
                     if (nextit >1) found[(int)b] =1;
+                    
                 }
                 
                 //REVERSE CODE CURRENTLY OFF
@@ -279,7 +302,7 @@ int main (int argc, char **argv)
                     next_kmer=access_nodes[cnt].get_next_rev_kmer(b);
                     
                     const auto nextit = kmer_count.find(next_kmer).wait();
-                    if (nextit >1) found[(int)b+4] =1;
+                    if (nextit >0) found[(int)b+4] =1;
                 }
 #endif
                 //Check if exactly one next kmer is found validly in the hash
@@ -287,6 +310,10 @@ int main (int argc, char **argv)
                 for(i=0; i<8; i++) {
                     if (found[i] ==1) num_found++;
                 }
+                
+                if (num_found>1) overfound++;
+                
+                //if (upcxx::rank_me()==0) cout<<"NF: "<<num_found<<endl;
                 
                 if (num_found==1) {
                     for(b=0; b<4; b++) {
@@ -308,6 +335,7 @@ int main (int argc, char **argv)
         upcxx::barrier();
         t_end=RunTime();
         cout<<upcxx::rank_me()<<": Kmer next computation: "<<t_end-t_start<<endl;
+        cout<<upcxx::rank_me()<<": Overmatched kmers: "<<overfound<<endl;
         
         
         
@@ -339,6 +367,13 @@ int main (int argc, char **argv)
         t_end=RunTime();
         cout<<upcxx::rank_me()<<": Kmer previous computation time: "<<t_end-t_start<<endl;
         
+            std::stringstream ss2;
+            ss2<<upcxx::rank_me();
+            outfile = outfile + ss2.str() + ".fas";
+            
+            fout.open(outfile.c_str());
+         
+            contig_num=0;
         //Walk the graph looking for kmers with no previous kmers: start contruction
         t_start=RunTime();
         for(i=0; i<valid_local_kmers; i++) {
@@ -356,19 +391,28 @@ int main (int argc, char **argv)
                     }
                     else {
                         upcxx::future<int> has_result = upcxx::rpc(kmer_count.get_target_rank(next_kmer), rpc_next_valid, next_kmer);
-                        upcxx::future<long> result_is = upcxx::rpc(kmer_count.get_target_rank(next_kmer), rpc_next_kmer, next_kmer);
+                        upcxx::future<uint64_t> result_is = upcxx::rpc(kmer_count.get_target_rank(next_kmer), rpc_next_kmer, next_kmer);
                         
                         next_valid = has_result.wait();
                         next_kmer = result_is.wait();
                     }
                     
                 }
-                if (new_contig.length()>40)
-                    cout<<"Contig: ("<<new_contig.length()<<"): "<<new_contig<<endl;
+                if (new_contig.length()>1000) {
+                    assembly_len+=new_contig.length();
+                    std::stringstream ss3;
+                    ss3<<upcxx::rank_me()<<"_Num"<<contig_num<<" Length: "<<new_contig.length();
+                    contig_name = ">Contig_" + ss3.str();
+                    fout<<contig_name<<endl<<new_contig<<endl;
+                    contig_num++;
+                    //cout<<"Contig: ("<<new_contig.length()<<"): "<<new_contig<<endl;
+                    
+                }
             }
         }
+            fout.close();
         t_end=RunTime();
-        cout<<upcxx::rank_me()<<": Kmer walk time: "<<t_end-t_start<<endl;
+        cout<<upcxx::rank_me()<<": Kmer walk time: "<<t_end-t_start<<" Total length >1000: "<<assembly_len<<endl;
         
         //write_seq=new Write_FASTA(outfile.c_str(), cdata);
 			
@@ -401,21 +445,21 @@ Kmer::Kmer(Molecule_Sequence *data, int pos)
 //Reverse is computed but not used
 {
     int i, two_mask=3, new_base;
-    long temp, rev_left, rev_right, kmask;
+    uint64_t temp, rev_left, rev_right, kmask;
     
     rev_kmer=0;
     my_kmer=0;
     
     
-    for(i=pos; i<pos+K_LEN; i++) {
+    for(i=pos; i<pos+K_LEN-1; i++) {
         my_kmer = my_kmer | ((*data)[i] & two_mask);
         my_kmer = my_kmer <<2;
         new_base=(*data)[i] ^ two_mask;
         rev_kmer= rev_kmer | (new_base << ((2*i)-pos));
         
     }
-    my_kmer = my_kmer >>2;
-
+    //my_kmer = my_kmer >>2;
+    my_kmer = my_kmer | ((*data)[pos+K_LEN-1] & two_mask);
     
     kmask=0;
     for(i=0; i<K_LEN; i++) {
@@ -423,6 +467,8 @@ Kmer::Kmer(Molecule_Sequence *data, int pos)
         kmask =kmask<<2;
     }
     kmask =kmask>>2;
+    
+    my_kmer= (my_kmer & kmask);
     
     if (pos !=0) {
         left=my_kmer;
@@ -471,7 +517,7 @@ Kmer::Kmer(Molecule_Sequence *data, int pos)
 }
 
 
-string get_kmer_string(long kmer)
+string get_kmer_string(uint64_t kmer)
 {
     int i, two_mask=3, val;
     
@@ -486,7 +532,7 @@ string get_kmer_string(long kmer)
     return(ret_val);
 }
 
-char get_last_base(long kmer)
+char get_last_base(uint64_t kmer)
 {
     int two_mask=3;
     return(num_to_base(kmer & two_mask));
@@ -513,10 +559,10 @@ Kmer_node::Kmer_node ()
     kmask =kmask>>2;
 }
 
-void Kmer_node::set_kmer(long kmer)
+void Kmer_node::set_kmer(uint64_t kmer)
 {
     int i, j,  val1, val2;
-    long part_kmer, next_base, orig_base;
+    uint64_t part_kmer, next_base, orig_base;
     my_kmer=kmer;
     rev_kmer=0;
     
@@ -534,19 +580,24 @@ void Kmer_node::set_kmer(long kmer)
     
 }
 
-long Kmer_node::get_next_kmer(long i)
+uint64_t Kmer_node::get_next_kmer(uint64_t base)
 {
-    long ret_val;
+    int i;
+    uint64_t ret_val, tmp, val;
+    
+
     ret_val=my_kmer;
-    ret_val = (ret_val << 2) & kmask;
-    ret_val = ret_val | (i & two_mask);
+    ret_val = (ret_val << 2);
+    ret_val = ret_val & kmask;
+    ret_val = ret_val | (base & two_mask);
+
     return(ret_val);
 }
 
 
-long Kmer_node::get_next_rev_kmer(long i)
+uint64_t Kmer_node::get_next_rev_kmer(uint64_t i)
 {
-    long ret_val, next_base;
+    uint64_t ret_val, next_base;
      
     ret_val=rev_kmer;
     
@@ -557,3 +608,5 @@ long Kmer_node::get_next_rev_kmer(long i)
     
     return(ret_val);
 }
+
+
